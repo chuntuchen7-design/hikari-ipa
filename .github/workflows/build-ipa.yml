@@ -69,24 +69,37 @@ jobs:
       - name: Patch device_info_plus native source
         run: |
           python3 - <<'PYEOF'
-          import glob, re, os, pathlib
+          import glob, os, pathlib
 
           cache = os.environ.get("PUB_CACHE") or str(pathlib.Path.home() / ".pub-cache")
           pattern = os.path.join(cache, "hosted", "pub.dev", "device_info_plus-*", "ios", "**", "*.m")
           files = glob.glob(pattern, recursive=True)
           print("candidates:", files)
+
+          STUB = (
+              '#import <Foundation/Foundation.h>\n'
+              '@interface NSProcessInfo (DshVisionStub)\n'
+              '- (BOOL)_dshIsVisionStub;\n'
+              '@end\n'
+              '@implementation NSProcessInfo (DshVisionStub)\n'
+              '- (BOOL)_dshIsVisionStub { return NO; }\n'
+              '@end\n'
+          )
+
           hit = 0
           for f in files:
               p = pathlib.Path(f)
               s = p.read_text(encoding="utf-8", errors="ignore")
               if "isiOSAppOnVision" not in s:
                   continue
-              s2 = re.sub(r"\[\[\s*NSProcessInfo\s+processInfo\s*\]\s*isiOSAppOnVision\s*\]", "NO", s)
-              p.write_text(s2, encoding="utf-8")
+              s = s.replace("isiOSAppOnVision", "_dshIsVisionStub")
+              p.write_text(STUB + s, encoding="utf-8")
               hit += 1
               print("patched:", f)
+
           if hit == 0:
-              print("::warning::没有找到需要打补丁的源文件，可能上游已修")
+              raise SystemExit("::error::没有找到 device_info_plus 的源文件")
+          print("ok, patched files:", hit)
           PYEOF
 
       - name: Build iOS (no codesign)
