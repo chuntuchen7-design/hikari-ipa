@@ -74,15 +74,15 @@ jobs:
         working-directory: app
         run: flutter pub get
 
-      - name: 安装 CocoaPods 依赖
+      - name: 环境诊断
         working-directory: app
         run: |
-          # 上游仓库没有提交 ios/Podfile，flutter 会在构建时自动生成
-          if [ -f ios/Podfile ]; then
-            (cd ios && pod install --repo-update)
-          else
-            echo "ios/Podfile 不存在，交给 flutter build 生成"
-          fi
+          echo "--- ios/ ---"
+          ls -la ios/ || true
+          echo "--- pod ---"
+          pod --version || true
+          echo "--- xcode ---"
+          xcodebuild -version || true
 
       - name: 编译（不签名）
         working-directory: app
