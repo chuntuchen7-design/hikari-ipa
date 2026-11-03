@@ -4,91 +4,73 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: "上游 hikari_novel_flutter 的分支 / tag"
+        description: "upstream branch or tag"
         required: false
         default: "main"
 
 jobs:
   build:
     runs-on: macos-15
-    timeout-minutes: 60
+    timeout-minutes: 90
 
     steps:
-      - name: 拉取上游源码
+      - name: Checkout upstream
         uses: actions/checkout@v4
         with:
           repository: 15dd/hikari_novel_flutter
           ref: ${{ github.event.inputs.ref || 'main' }}
           path: app
 
-      - name: 安装 Flutter
+      - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: stable
           cache: true
 
-      - name: 版本自检（必须 >= 3.44.0）
+      - name: Diagnostics
         run: |
           flutter --version
-          V=$(flutter --version --machine | python3 -c "import sys,json;print(json.load(sys.stdin)['frameworkVersion'])")
-          echo "Flutter = $V"
-          python3 - "$V" <<'EOF'
-          import sys
-          v = sys.argv[1].split('.')
-          need = (3, 44)
-          got = (int(v[0]), int(v[1]))
-          if got < need:
-              print(f"::error::Flutter {sys.argv[1]} 低于要求的 3.44.0，pubspec.lock 会拒绝解析")
-              sys.exit(1)
-          print("版本满足要求")
-          EOF
+          xcodebuild -version
+          pod --version
 
-      - name: 打补丁：补全请求头（否则 Cloudflare 403）
+      - name: Patch sources
         working-directory: app
         run: |
-          python3 - <<'EOF'
-          import re, sys, pathlib
+          python3 - <<'PYEOF'
+          import re, pathlib
+
+          # 1) device_info_plus 13.3.0 调用了 SDK 里不存在的 isiOSAppOnVision，钉回 13.2.0
+          pp = pathlib.Path("pubspec.yaml")
+          t = pp.read_text(encoding="utf-8")
+          if "device_info_plus: ^13.2.0" in t:
+              pp.write_text(t.replace("device_info_plus: ^13.2.0", "device_info_plus: 13.2.0"), encoding="utf-8")
+              print("pinned device_info_plus -> 13.2.0")
+          else:
+              print("device_info_plus constraint untouched")
+
+          # 2) 补全请求头，否则 Cloudflare 403
           p = pathlib.Path("lib/common/constants.dart")
           s = p.read_text(encoding="utf-8")
           if "Accept-Language" in s:
-              print("已经打过补丁，跳过")
-              sys.exit(0)
-          new = '''const Map<String, String> kUserAgent = {
-            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-            "Upgrade-Insecure-Requests": "1",
-          };'''
-          new = new.replace("            ", "  ")
-          pat = re.compile(r"const Map<String, String> kUserAgent = \{.*?\};", re.S)
-          if not pat.search(s):
-              print("::error::没找到 kUserAgent 定义，上游可能改过结构")
-              sys.exit(1)
-          s2 = pat.sub(new, s, count=1)
-          p.write_text(s2, encoding="utf-8")
-          print("补丁已应用")
-          print(s2[s2.index("const Map<String, String> kUserAgent"):][:500])
-          EOF
+              print("UA already patched")
+          else:
+              new = 'const Map<String, String> kUserAgent = {\n  "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",\n  "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",\n  "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",\n  "Upgrade-Insecure-Requests": "1",\n};'
+              pat = re.compile(r"const Map<String, String> kUserAgent = \{.*?\};", re.S)
+              if not pat.search(s):
+                  raise SystemExit("kUserAgent block not found")
+              p.write_text(pat.sub(new, s, count=1), encoding="utf-8")
+              print("UA patch applied")
+          PYEOF
 
-      - name: 依赖
+      - name: Pub get
         working-directory: app
         run: flutter pub get
 
-      - name: 环境诊断
-        working-directory: app
-        run: |
-          echo "--- ios/ ---"
-          ls -la ios/ || true
-          echo "--- pod ---"
-          pod --version || true
-          echo "--- xcode ---"
-          xcodebuild -version || true
-
-      - name: 编译（不签名）
+      - name: Build iOS (no codesign)
         working-directory: app
         run: flutter build ios --release --no-codesign
 
-      - name: 打包 IPA
+      - name: Package IPA
         run: |
           set -euo pipefail
           rm -rf Payload hikari.ipa
@@ -98,7 +80,7 @@ jobs:
           ls -lh hikari.ipa
           unzip -l hikari.ipa | head -12
 
-      - name: 上传
+      - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
           name: hikari-ipa
